@@ -4,6 +4,7 @@ using System.IO;
 using System.Windows.Forms;
 using System.Resources;
 
+// git log
 
 namespace ADT_Terminal
 {
