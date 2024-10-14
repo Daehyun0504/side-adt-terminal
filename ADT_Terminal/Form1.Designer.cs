@@ -18,7 +18,6 @@ namespace ADT_Terminal
         private const byte CAN = 0x18;  // Cancel Transmission
         private const byte C = 0x43;    // 'C' for CRC-16 mode
 
-        private System.ComponentModel.IContainer components = null;
         private System.Windows.Forms.Button buttonFile;
         private System.Windows.Forms.Button buttonHelp;
         private System.Windows.Forms.ComboBox comboBoxPort;
