@@ -399,7 +399,7 @@ namespace ADT_Terminal
             }
         }
 
-        // 전송 코드
+        // 송수신 코드
         private void SendFileUsingXmodem(byte[] fileBytes)
         {
             int totalBlocks = (fileBytes.Length + BLOCK_SIZE - 1) / BLOCK_SIZE;  // 전체 블록 수 계산
@@ -442,9 +442,21 @@ namespace ADT_Terminal
                 // **속도 계산 및 업데이트**
                 TimeSpan elapsedTime = DateTime.Now - transferStartTime;
                 double speed = sentBytes / elapsedTime.TotalSeconds; // 속도 (Bytes per second)
+
+                // 속도 단위 변환
+                string speedText = speed >= 1000
+                    ? $"{speed / 1000:F2} kbps"
+                    : $"{speed:F2} bps";
+
+                // 시간을 "x분 x초" 형식으로 변환
+                int minutes = (int)elapsedTime.TotalSeconds / 60;
+                int seconds = (int)elapsedTime.TotalSeconds % 60;
+                string timeElapsedText = $"{minutes}분 {seconds}초";
+
+                // 속도와 시간 표시
                 speedLabel.Invoke(new Action(() =>
                 {
-                    speedLabel.Text = $"Speed: {speed:F2} Bps";  // 소수점 2자리로 속도 표시
+                    speedLabel.Text = $"Speed: {speedText} ({timeElapsedText})";  // 속도와 시간 표시
                 }));
 
                 // 나머지 데이터 패딩 및 CRC 계산
@@ -534,7 +546,8 @@ namespace ADT_Terminal
                 return;
             }
 
-
+            // 전송 완료 시간 계산
+            TimeSpan totalTransferTime = DateTime.Now - transferStartTime;
 
             // Dispose of port.
             port.Close();
@@ -544,7 +557,8 @@ namespace ADT_Terminal
                 serialPort1.Open();
             }
 
-            MessageBox.Show("Download Complete");
+            // 전송 완료 메시지와 소요 시간 표시
+            MessageBox.Show($"Download Complete\nTotal Time: {totalTransferTime.TotalMinutes:F0}분 {totalTransferTime.Seconds}초", "Info", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
     }
 }
