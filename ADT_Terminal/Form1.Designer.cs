@@ -271,7 +271,7 @@ namespace ADT_Terminal
                 serialPort1.StopBits = (StopBits)Enum.Parse(typeof(StopBits), comboBoxStopBits.Text);
                 serialPort1.Handshake = (Handshake)Enum.Parse(typeof(Handshake), comboBoxFlowControl.Text);
 
-                serialPort1.DataReceived += new SerialDataReceivedEventHandler(SerialPort1_DataReceived);
+                serialPort1.DataReceived += new SerialDataReceivedEventHandler(serialPort1_DataReceived);
                 serialPort1.Open();
 
                 MessageBox.Show("Serial Port Opened");
@@ -373,14 +373,24 @@ namespace ADT_Terminal
         }
 
         // 데이터 수신 메서드
-        private void SerialPort1_DataReceived(object sender, SerialDataReceivedEventArgs e)
+        private void serialPort1_DataReceived(object sender, SerialDataReceivedEventArgs e)
         {
             try
             {
+                // 수신된 데이터 읽기
                 string receivedData = serialPort1.ReadExisting();
-                if (receivedData.Contains(((char)'C').ToString())) // 'C' 수신
+                if (receivedData.Contains(((char)C).ToString()))  // 수신된 값이 'C'라면
                 {
-                    StartXmodemTransfer();
+                    // 파일이 선택되어 있는지 확인
+                    if (!string.IsNullOrEmpty(selectedFilePath))
+                    {
+                        byte[] fileBytes = File.ReadAllBytes(selectedFilePath);
+                        SendFileUsingXmodem(fileBytes);  // XMODEM 전송 시작 (CRC-16)
+                    }
+                    else
+                    {
+                        MessageBox.Show("Please select a file first.");
+                    }
                 }
             }
             catch (Exception ex)
@@ -389,10 +399,16 @@ namespace ADT_Terminal
             }
         }
 
-        // XMODEM 전송 프로토콜
-        // XModem 데이터 전송 시작
-        private void StartXmodemTransfer()
+        // 전송 코드
+        private void SendFileUsingXmodem(byte[] fileBytes)
         {
+            int totalBlocks = (fileBytes.Length + BLOCK_SIZE - 1) / BLOCK_SIZE;  // 전체 블록 수 계산
+            int totalBytes = fileBytes.Length;  // 총 바이트 수
+            int sentBytes = 0;  // 전송된 바이트 수 초기화
+
+            // 전송 시작 시간 기록
+            transferStartTime = DateTime.Now;
+
             if (serialPort1.IsOpen)
             {
                 serialPort1.Close();
@@ -408,88 +424,117 @@ namespace ADT_Terminal
                 PortName = serialPort1.PortName,
             };
 
-            // 파일 데이터를 읽어옵니다.
-            byte[] fileBytes;
-            try
+            port.Open();
+
+            for (int blockNumber = 1; blockNumber <= totalBlocks; blockNumber++)
             {
-                fileBytes = File.ReadAllBytes(selectedFilePath);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error reading file: {ex.Message}");
-                return;
-            }
+                byte[] dataBlock = new byte[BLOCK_SIZE];
+                int offset = (blockNumber - 1) * BLOCK_SIZE;
+                int bytesToSend = Math.Min(BLOCK_SIZE, fileBytes.Length - offset);
+                Array.Copy(fileBytes, offset, dataBlock, 0, bytesToSend);
 
-            // 패딩 크기 계산
-            int paddingSize = BLOCK_SIZE - (fileBytes.Length % BLOCK_SIZE);
-            if (paddingSize == BLOCK_SIZE) paddingSize = 0; // 패딩이 필요 없을 경우 0으로 설정
-
-            // 총 블록 수 및 총 바이트 계산
-            int totalBlocks = (fileBytes.Length + paddingSize) / BLOCK_SIZE;
-            int totalBytes = fileBytes.Length + paddingSize;
-
-            int sentBytes = 0;
-            transferStartTime = DateTime.Now;
-
-            // Instantiate XModemCommunicator.
-            var xmodem = new XModemCommunicator();
-
-            // Attach port.
-            xmodem.Port = port;
-
-            // Pass in Data.
-            xmodem.Data = fileBytes;
-
-            // Subscribe to events.
-            xmodem.PacketToSend += (s, e) =>
-            {
-                sentBytes += BLOCK_SIZE;
+                sentBytes += bytesToSend;  // 전송된 바이트 수 증가
 
                 // 진행 상태 레이블 업데이트
                 string statusText = $"{sentBytes} / {totalBytes} bytes";
                 downloadStatusLabel.Invoke(new Action(() => downloadStatusLabel.Text = statusText));
 
-                // 속도 계산 및 업데이트
+                // **속도 계산 및 업데이트**
                 TimeSpan elapsedTime = DateTime.Now - transferStartTime;
                 double speed = sentBytes / elapsedTime.TotalSeconds; // 속도 (Bytes per second)
                 speedLabel.Invoke(new Action(() =>
                 {
-                    if (speed >= 1000)
-                        speedLabel.Text = $"Speed: {speed / 1000:F2} Kbps"; // Kbps로 표시
-                    else
-                        speedLabel.Text = $"Speed: {speed:F2} Bps"; // Bps로 표시
+                    speedLabel.Text = $"Speed: {speed:F2} Bps";  // 소수점 2자리로 속도 표시
                 }));
 
-                // 진행률 업데이트
-                int progress = (int)((double)sentBytes / totalBytes * 100);
-                progressBar.Invoke(new Action(() => progressBar.Value = progress));
-            };
+                // 나머지 데이터 패딩 및 CRC 계산
+                for (int i = bytesToSend; i < BLOCK_SIZE; i++)
+                {
+                    dataBlock[i] = 0x1A;
+                }
 
-            // Subscribe to events.
-            xmodem.Completed += (s, e) =>
-            {
-                Console.WriteLine($"Operation completed.\nPress enter to exit.");
-            };
-            xmodem.Aborted += (s, e) =>
-            {
-                Console.WriteLine("Operation Aborted.\nPress enter to exit.");
-            };
+                bool blockSentSuccessfully = false;
+                while (!blockSentSuccessfully)
+                {
+                    byte[] block = new byte[BLOCK_SIZE + 5];
+                    block[0] = STX;
+                    block[1] = (byte)blockNumber;
+                    block[2] = (byte)(255 - blockNumber);
+                    Array.Copy(dataBlock, 0, block, 3, BLOCK_SIZE);
 
-            // Open port for use.
-            port.Open();
+                    ushort crc = CalculateCRC16(dataBlock);
+                    block[BLOCK_SIZE + 3] = (byte)((crc >> 8) & 0xFF);
+                    block[BLOCK_SIZE + 4] = (byte)(crc & 0xFF);
 
-            Console.WriteLine("Awaiting Receiver. Press enter to cancel.");
-            // Send Data.
-            xmodem.Send();
+                    port.Write(block, 0, block.Length);
 
-            // Await user.
-            Console.ReadLine();
+                    blockSentSuccessfully = false;
 
-            if (xmodem.State != XModemStates.Idle)
-            {
-                xmodem.CancelOperation();
-                Console.ReadLine();
+                    bool ackOrNakReceived = false;
+                    for (int attempt = 0; attempt < 10; attempt++)
+                    {
+                        System.Threading.Thread.Sleep(50);
+                        if (port.BytesToRead > 0)
+                        {
+                            byte response = (byte)port.ReadByte();
+                            if (response == ACK)
+                            {
+                                blockSentSuccessfully = true;
+                                ackOrNakReceived = true;
+                                break;
+                            }
+                            else if (response == NAK)
+                            {
+                                MessageBox.Show("NAK received, resending block...");
+                                ackOrNakReceived = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!ackOrNakReceived)
+                    {
+                        MessageBox.Show("Error: Transmission not acknowledged after 10 attempts.");
+                        return;
+                    }
+                }
+
+                int progressPercentage = (blockNumber * 100) / totalBlocks;
+                progressBar.Invoke(new Action(() => progressBar.Value = progressPercentage));
             }
+
+            port.Write(new byte[] { EOT }, 0, 1);
+
+            bool eotAckReceived = false;
+            for (int attempt = 0; attempt < 10; attempt++)
+            {
+                System.Threading.Thread.Sleep(3000);
+                if (port.BytesToRead > 0)
+                {
+                    byte finalResponse = (byte)port.ReadByte();
+                    if (finalResponse == ACK)
+                    {
+                        eotAckReceived = true;
+                        break;
+                    }
+                    else
+                    {
+                        MessageBox.Show($"Unexpected response received: {finalResponse}");
+                    }
+                }
+                else
+                {
+                    port.Write(new byte[] { EOT }, 0, 1);
+                }
+            }
+
+            if (!eotAckReceived)
+            {
+                MessageBox.Show("Error: EOT not acknowledged after 10 attempts.");
+                return;
+            }
+
+
 
             // Dispose of port.
             port.Close();
@@ -498,6 +543,8 @@ namespace ADT_Terminal
             {
                 serialPort1.Open();
             }
+
+            MessageBox.Show("Download Complete");
         }
     }
 }
